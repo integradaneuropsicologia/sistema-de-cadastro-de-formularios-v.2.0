@@ -46,7 +46,7 @@ async function dbPatchBy(table, column, value, patch) {
 }
 
 
-const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/sistema-de-cadastro-de-formularios-v.2.0/";
+const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxQZeGPULqpJcLXxxyOP2NC6rd73E46Q8Xoexbu1JD8SOhNc9JxXvidUuaYwWxsn07Bfg/exec";
 
 /* ===== HELPERS DOM ===== */
@@ -1611,6 +1611,7 @@ async function doLogin() {
   enterLookupMode();
   $("#pacCPF").focus();
 }
+
 
 
 
