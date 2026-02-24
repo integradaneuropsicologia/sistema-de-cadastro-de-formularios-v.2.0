@@ -482,12 +482,22 @@ body[data-theme="light"] .btn.sec {
 }
 
 /* ===== Grupos de testes por source ===== */
+/* ===== Grupos de testes por source (dropdown fechado por padrão) ===== */
 .test-group {
-  grid-column: 1 / -1; /* faz o grupo ocupar a largura toda do grid pai */
+  grid-column: 1 / -1;
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 10px;
   background: rgba(148, 163, 184, 0.04);
+  overflow: hidden;
+}
+
+/* summary como cabeçalho clicável */
+.test-group > summary {
+  list-style: none;
+}
+
+.test-group > summary::-webkit-details-marker {
+  display: none;
 }
 
 .group-head {
@@ -495,7 +505,29 @@ body[data-theme="light"] .btn.sec {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 8px;
+  padding: 10px;
+  cursor: pointer;
+  user-select: none;
+  margin: 0;
+  transition: background 0.12s ease;
+}
+
+.group-head:hover {
+  background: rgba(148, 163, 184, 0.06);
+}
+
+/* setinha */
+.group-head::after {
+  content: "▸";
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+
+/* quando abre o details */
+.test-group[open] .group-head::after {
+  transform: rotate(90deg);
 }
 
 .group-title {
@@ -524,6 +556,7 @@ body[data-theme="light"] .btn.sec {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
+  padding: 0 10px 10px 10px; /* só aparece quando o grupo abre */
 }
 
 
