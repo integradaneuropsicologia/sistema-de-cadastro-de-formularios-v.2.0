@@ -46,7 +46,7 @@ async function dbPatchBy(table, column, value, patch) {
 }
 
 
-const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
+const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/sistema-de-cadastro-de-formularios-v.2.0/";
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxQZeGPULqpJcLXxxyOP2NC6rd73E46Q8Xoexbu1JD8SOhNc9JxXvidUuaYwWxsn07Bfg/exec";
 
 /* ===== HELPERS DOM ===== */
@@ -422,11 +422,26 @@ async function generateSelectedFormsPdf(selectedItems) {
     if (idx > 0) doc.addPage();
 
     const title = item.title + (item.code ? ` (${item.code})` : "");
-    const rows = flattenJsonToRows(item.payload).map(([campo, resposta]) => [
+    const isPerguntaRespostaArray =
+  Array.isArray(item.payload) &&
+  item.payload.every(
+    (x) =>
+      x &&
+      typeof x === "object" &&
+      !Array.isArray(x) &&
+      "pergunta" in x &&
+      "resposta" in x
+  );
+
+const rows = isPerguntaRespostaArray
+  ? item.payload.map((x, i) => [
+      String(x.pergunta || `Pergunta ${i + 1}`),
+      String(normalizePdfValue(x.resposta))
+    ])
+  : flattenJsonToRows(item.payload).map(([campo, resposta]) => [
       String(campo || ""),
       String(resposta ?? "")
     ]);
-
     const startY = drawPageHeader({
       formTitle: title,
       formDate: item.submittedAt,
@@ -438,7 +453,7 @@ async function generateSelectedFormsPdf(selectedItems) {
       doc.autoTable({
         startY,
         margin: { left: M.left, right: M.right, bottom: M.bottom },
-        head: [["Campo", "Resposta"]],
+        head: [["Pergunta", "Resposta"]],
         body: rows,
         theme: "grid",
         styles: {
@@ -461,8 +476,8 @@ async function generateSelectedFormsPdf(selectedItems) {
           fillColor: [248, 250, 252]
         },
         columnStyles: {
-          0: { cellWidth: 170, fontStyle: "bold" },
-          1: { cellWidth: contentWidth - 170 }
+        0: { cellWidth: contentWidth * 0.78, fontStyle: "bold" }, // pergunta (maior)
+        1: { cellWidth: contentWidth * 0.22 }                     // resposta (menor)
         },
         didDrawPage: (data) => {
           // Se a tabela quebrar em mais páginas, repete um mini rodapé simples
@@ -1611,7 +1626,5 @@ async function doLogin() {
   enterLookupMode();
   $("#pacCPF").focus();
 }
-
-
 
 
