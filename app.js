@@ -19,6 +19,8 @@ const DB = {
   RESPONSES: "respostas"
 };
 
+let allDonePatientsCache = [];
+let allDonePatientsCacheLoaded = false;
 
 // ===== HELPERS DB =====
 async function dbSearch(table, filters = {}) {
@@ -47,7 +49,6 @@ async function dbPatchBy(table, column, value, patch) {
 
 
 const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/sistema-de-cadastro-de-formularios-v.2.0/";
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxQZeGPULqpJcLXxxyOP2NC6rd73E46Q8Xoexbu1JD8SOhNc9JxXvidUuaYwWxsn07Bfg/exec";
 
 /* ===== HELPERS DOM ===== */
 const $ = (s) => document.querySelector(s);
@@ -850,6 +851,26 @@ function patientAlreadyHasTest(code) {
   return patientHasLiberado(code) || patientHasFeito(code);
 }
 
+function patientIsHiddenFromDoneList(p) {
+  const v = getAnyField(p, ["ocultar_concluido"]);
+  if (v === true) return true;
+  if (v === false || v == null) return false;
+
+  const s = String(v).trim().toLowerCase();
+  return s === "true" || s === "1" || s === "sim" || s === "yes";
+}
+
+async function setPatientDoneListCheck(cpfDigits, checked) {
+  const found = await findPatientByCPF(cpfDigits);
+  if (!found?.cpf) {
+    throw new Error("Não consegui localizar o paciente para atualizar o campo ocultar_concluido.");
+  }
+
+  const patched = await dbPatchBy(DB.PATIENTS, "cpf", found.cpf, { ocultar_concluido: !!checked });
+  return patched;
+}
+
+
 /* ===== JSONB (tests_liberados / tests_feitos) ===== */
 function safeJsonParse(v) {
   if (v == null) return null;
@@ -951,6 +972,186 @@ function getAnyField(row, candidates = []) {
 function asTrimmedString(v) {
   return v === undefined || v === null ? "" : String(v).trim();
 }
+
+function patientFilledAllLiberados(p) {
+  const liberados = patientLiberadosSet(p);
+  if (!liberados.size) return false; // ignora quem não tem nada liberado
+
+  const feitos = patientFeitosSet(p);
+  for (const code of liberados) {
+    if (!feitos.has(code)) return false;
+  }
+  return true;
+}
+
+async function refreshAllDonePatientsCache() {
+  try {
+    // sem filtro = pega todos os pacientes visíveis pela policy
+    const rows = await dbSearch(DB.PATIENTS);
+
+    allDonePatientsCache = (rows || [])
+  .filter((p) => p && p.cpf)
+  .filter((p) => patientFilledAllLiberados(p))
+  .filter((p) => !patientIsHiddenFromDoneList(p)) // <-- NOVO: oculta marcados
+  .map((p) => {
+    const liberados = patientLiberadosSet(p);
+    const feitos = patientFeitosSet(p);
+    const cpfDigits = onlyDigits(p.cpf || "");
+
+    return {
+      nome: String(p.nome || "Sem nome").trim(),
+      cpf: cpfDigits,
+      liberadosCount: liberados.size,
+      feitosCount: feitos.size
+    };
+  })
+  .sort((a, b) =>
+    a.nome.localeCompare(b.nome, "pt-BR", { sensitivity: "base" })
+  );
+
+    allDonePatientsCacheLoaded = true;
+  } catch (e) {
+    console.error("Erro ao montar lista de pacientes com tudo preenchido:", e);
+    allDonePatientsCache = [];
+    allDonePatientsCacheLoaded = false;
+  }
+}
+
+function renderAllDonePatientsDropdown() {
+  const grid = $("#testsGrid");
+  if (!grid) return;
+
+  // remove bloco anterior (pra não duplicar)
+  document.getElementById("allDonePatientsWrap")?.remove();
+
+  const wrap = el("details", { className: "test-group", id: "allDonePatientsWrap" });
+  wrap.open = false;
+
+  const head = el("summary", { className: "group-head" });
+  const title = el("div", { className: "group-title" });
+  const dot = el("span", { className: "group-dot" });
+  const name = el("span", {
+    textContent: "Pacientes com todos os formulários preenchidos"
+  });
+
+  title.appendChild(dot);
+  title.appendChild(name);
+
+  const counter = el("span", {
+    className: "tag ok",
+    textContent: String(allDonePatientsCache.length)
+  });
+
+  head.appendChild(title);
+  head.appendChild(counter);
+
+  const body = el("div", {
+    style: "padding: 10px; display:flex; flex-direction:column; gap:8px;"
+  });
+
+  const hint = el("div", {
+    style: "font-size:12px; opacity:.85;",
+    textContent: allDonePatientsCacheLoaded
+      ? "Clique em Carregar para abrir o cadastro. Marque Ocultar para remover da lista."
+      : "Carregando lista..."
+  });
+  body.appendChild(hint);
+
+  if (!allDonePatientsCache.length) {
+    const empty = el("div", {
+      style: "font-size:13px; opacity:.9; padding:6px 0;",
+      textContent: allDonePatientsCacheLoaded
+        ? "Nenhum paciente concluído disponível na lista."
+        : "Carregando..."
+    });
+    body.appendChild(empty);
+  } else {
+    for (const p of allDonePatientsCache) {
+      const row = el("div", {
+        style: `
+          display:grid;
+          grid-template-columns:auto 1fr auto;
+          gap:8px;
+          align-items:center;
+          border:1px solid var(--line);
+          border-radius:10px;
+          padding:8px;
+          background: rgba(148,163,184,.03);
+        `
+      });
+
+      // Botão carregar
+      const btnLoad = el("button", {
+        type: "button",
+        textContent: "Carregar",
+        className: "btn small"
+      });
+
+      btnLoad.addEventListener("click", async () => {
+        $("#pacCPF").value = maskCPF(p.cpf);
+        await carregarPorCPF();
+      });
+
+      // Info
+      const cpfLabel = p.cpf && p.cpf.length === 11 ? maskCPF(p.cpf) : (p.cpf || "sem CPF");
+      const info = el("div");
+      const line1 = el("div", {
+        style: "font-weight:700; font-size:13px;",
+        textContent: p.nome
+      });
+      const line2 = el("div", {
+        style: "font-size:12px; opacity:.85;",
+        textContent: `${cpfLabel} • ${p.liberadosCount} liberado(s)`
+      });
+      info.appendChild(line1);
+      info.appendChild(line2);
+
+      // Checkbox ocultar
+      const hideLabel = el("label", {
+        style: "display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;"
+      });
+      const hideCb = el("input", { type: "checkbox" });
+      const hideTxt = el("span", { textContent: "Ocultar" });
+
+      hideCb.addEventListener("change", async () => {
+        try {
+          hideCb.disabled = true;
+
+          await setPatientDoneListCheck(p.cpf, hideCb.checked);
+
+          // some da lista imediatamente
+          await refreshAllDonePatientsCache();
+          renderAllDonePatientsDropdown();
+
+          setMsg($("#pacMsg"), hideCb.checked
+            ? "Paciente ocultado da lista de concluídos."
+            : "Paciente voltou para a lista de concluídos.", "ok");
+        } catch (e) {
+          console.error(e);
+          hideCb.checked = !hideCb.checked;
+          setMsg($("#pacMsg"), "Erro ao atualizar o campo check: " + (e?.message || e), "err");
+        } finally {
+          hideCb.disabled = false;
+        }
+      });
+
+      hideLabel.appendChild(hideCb);
+      hideLabel.appendChild(hideTxt);
+
+      row.appendChild(btnLoad);
+      row.appendChild(info);
+      row.appendChild(hideLabel);
+
+      body.appendChild(row);
+    }
+  }
+
+  wrap.appendChild(head);
+  wrap.appendChild(body);
+
+  // entra depois dos grupos
+  grid.appendChild(wrap);
+}
   
 /* ===== TESTES ===== */
 async function loadTests() {
@@ -997,8 +1198,11 @@ async function loadTests() {
     }
   }
 
-  renderTests();
+  await refreshAllDonePatientsCache();
+renderTests();
+  
 }
+
 function testStatus(t) {
   // NOVO: baseado em JSONB
   const code = t.code;
@@ -1047,13 +1251,15 @@ function renderTests() {
   });
 
   if (!visible.length) {
-    info.className = "tag new";
-    info.textContent =
-      ageYears === null
-        ? "Nenhum teste ativo para listar (preencha a data de nascimento para filtrar por idade)."
-        : `Nenhum teste ativo compatível com ${ageYears} anos.`;
-    return;
-  }
+  info.className = "tag new";
+  info.textContent =
+    ageYears === null
+      ? "Nenhum teste ativo para listar (preencha a data de nascimento para filtrar por idade)."
+      : `Nenhum teste ativo compatível com ${ageYears} anos.`;
+
+  renderAllDonePatientsDropdown(); // <-- adiciona isso
+  return;
+}
 
   // Contagens por status (apenas dos visíveis)
   let cCadastrar = 0, cJa = 0, cDone = 0;
@@ -1096,104 +1302,114 @@ function renderTests() {
   }
 
   // Render por grupo
-  for (const k of groupOrder) {
-    const items = groups.get(k);
-    if (!items || !items.length) continue;
+  // Render por grupo
+for (const k of groupOrder) {
+  const items = groups.get(k);
+  if (!items || !items.length) continue;
 
-    // aplica filtro de status por item dentro do grupo
-    const itemsFiltered = items.filter((t) => {
-      const st = testStatus(t);
-      if (statusFilter === "todos") return true;
-      return st === statusFilter;
-    });
+  // aplica filtro de status por item dentro do grupo
+  const itemsFiltered = items.filter((t) => {
+    const st = testStatus(t);
+    if (statusFilter === "todos") return true;
+    return st === statusFilter;
+  });
 
-    if (!itemsFiltered.length) continue;
+  if (!itemsFiltered.length) continue;
 
-    const groupWrap = el("div", { className: "test-group" });
-    groupWrap.classList.add(`source-${k}`);
+  // AGORA: grupo vira <details> (fechado por padrão)
+  const groupWrap = el("details", { className: "test-group" });
+  groupWrap.classList.add(`source-${k}`);
+  groupWrap.open = false;
 
-    const head = el("div", { className: "group-head" });
-    const title = el("div", { className: "group-title" });
-    const dot = el("span", { className: "group-dot" });
-    const name = el("span", { textContent: groupLabel[k] || "Outros" });
-    title.appendChild(dot);
-    title.appendChild(name);
+  // Cabeçalho clicável
+  const head = el("summary", { className: "group-head" });
 
-    const counter = el("span", { className: "tag new", textContent: `${itemsFiltered.length}` });
+  const title = el("div", { className: "group-title" });
+  const dot = el("span", { className: "group-dot" });
+  const name = el("span", { textContent: groupLabel[k] || "Outros" });
+  title.appendChild(dot);
+  title.appendChild(name);
 
-    head.appendChild(title);
-    head.appendChild(counter);
+  const counter = el("span", {
+    className: "tag new",
+    textContent: `${itemsFiltered.length}`
+  });
 
-    const inner = el("div", { className: "group-grid" });
+  head.appendChild(title);
+  head.appendChild(counter);
 
-    for (const t of itemsFiltered) {
-      const st = testStatus(t);
+  const inner = el("div", { className: "group-grid" });
 
-      const wrap = el("div", { className: "check" });
-      wrap.classList.add(`source-${t.srcKey}`);
+  for (const t of itemsFiltered) {
+    const st = testStatus(t);
 
-      // Coluna esquerda
-      let leftBox;
-      if (st === "cadastrar") {
-        leftBox = el("input", { type: "checkbox", id: `cb_${t.code}` });
-      } else {
-        leftBox = el("div", { style: "width:16px;flex-shrink:0;" });
-      }
+    const wrap = el("div", { className: "check" });
+    wrap.classList.add(`source-${t.srcKey}`);
 
-      // Meio
-      const box = el("div", { className: "box" });
-      const codeEl = el("div", { className: "code", textContent: t.code });
-      const labelEl = el("div", { className: "title", textContent: t.label });
-      box.appendChild(codeEl);
-      box.appendChild(labelEl);
-
-      // Tag status
-      let tagClass = "new";
-      let tagText = "cadastrar";
-      if (st === "ja") { tagClass = "ok"; tagText = "já registrado"; }
-      if (st === "preenchido") { tagClass = "done"; tagText = "preenchido"; }
-
-      const tag = el("span", { className: "tag " + tagClass, textContent: tagText });
-
-      // Chip origem (mantém)
-      const srcChip = el("span", {
-        className: `source-chip ${t.srcKey}`,
-        textContent: t.srcLabel
-      });
-
-      wrap.appendChild(leftBox);
-      wrap.appendChild(box);
-      wrap.appendChild(tag);
-      wrap.appendChild(srcChip);
-
-      // Remover teste (quando já está liberado OU já foi preenchido)
-      if (st === "ja" || st === "preenchido") {
-        wrap.appendChild(el("div", { style: "flex-basis:100%;" }));
-
-        const rmWrap = el("label", { className: "rmbox" });
-        const rmChk = el("input", {
-          type: "checkbox",
-          id: `rm_${t.code}`,
-          className: "rmchk"
-        });
-        const rmTxt = el("div", {});
-        const strongLine = el("div", { className: "rmnote", textContent: "Remover" });
-        const smallLine = el("div", { textContent: "" });
-
-        rmTxt.appendChild(strongLine);
-        rmTxt.appendChild(smallLine);
-        rmWrap.appendChild(rmChk);
-        rmWrap.appendChild(rmTxt);
-        wrap.appendChild(rmWrap);
-      }
-
-      inner.appendChild(wrap);
+    // Coluna esquerda
+    let leftBox;
+    if (st === "cadastrar") {
+      leftBox = el("input", { type: "checkbox", id: `cb_${t.code}` });
+    } else {
+      leftBox = el("div", { style: "width:16px;flex-shrink:0;" });
     }
 
-    groupWrap.appendChild(head);
-    groupWrap.appendChild(inner);
-    grid.appendChild(groupWrap);
+    // Meio
+    const box = el("div", { className: "box" });
+    const codeEl = el("div", { className: "code", textContent: t.code });
+    const labelEl = el("div", { className: "title", textContent: t.label });
+    box.appendChild(codeEl);
+    box.appendChild(labelEl);
+
+    // Tag status
+    let tagClass = "new";
+    let tagText = "cadastrar";
+    if (st === "ja") { tagClass = "ok"; tagText = "já registrado"; }
+    if (st === "preenchido") { tagClass = "done"; tagText = "preenchido"; }
+
+    const tag = el("span", { className: "tag " + tagClass, textContent: tagText });
+
+    // Chip origem
+    const srcChip = el("span", {
+      className: `source-chip ${t.srcKey}`,
+      textContent: t.srcLabel
+    });
+
+    wrap.appendChild(leftBox);
+    wrap.appendChild(box);
+    wrap.appendChild(tag);
+    wrap.appendChild(srcChip);
+
+    // Remover teste (quando já está liberado OU já foi preenchido)
+    if (st === "ja" || st === "preenchido") {
+      wrap.appendChild(el("div", { style: "flex-basis:100%;" }));
+
+      const rmWrap = el("label", { className: "rmbox" });
+      const rmChk = el("input", {
+        type: "checkbox",
+        id: `rm_${t.code}`,
+        className: "rmchk"
+      });
+      const rmTxt = el("div", {});
+      const strongLine = el("div", { className: "rmnote", textContent: "Remover" });
+      const smallLine = el("div", { textContent: "" });
+
+      rmTxt.appendChild(strongLine);
+      rmTxt.appendChild(smallLine);
+      rmWrap.appendChild(rmChk);
+      rmWrap.appendChild(rmTxt);
+      wrap.appendChild(rmWrap);
+    }
+
+    inner.appendChild(wrap);
   }
+
+  groupWrap.appendChild(head);
+  groupWrap.appendChild(inner);
+  grid.appendChild(groupWrap);
+  
+}
+renderAllDonePatientsDropdown();
 }
 
 /* ===== LOOKUP MODE ===== */
@@ -1279,6 +1495,8 @@ async function carregarPorCPF() {
 
     await loadTests();
     await loadFilledFormsForCurrentCPF();
+    await refreshAllDonePatientsCache();
+    renderAllDonePatientsDropdown();
 }
 
 
