@@ -185,6 +185,22 @@ function inferResponsePayload(row) {
   return parsed ?? raw;
 }
 
+function inferResponseMeta(row) {
+  // results_meta normalmente já vem como objeto; se vier string, safeJsonParse resolve
+  const raw =
+    getAnyField(row, [
+      "results_meta",
+      "result_meta",
+      "meta",
+      "meta_json",
+      "resultsMeta"
+    ]) ?? null;
+
+  const parsed = safeJsonParse(raw);
+  return parsed ?? raw;
+}
+
+
 function inferResponseDate(row) {
   return (
     getAnyField(row, [
@@ -199,6 +215,7 @@ function inferResponseDate(row) {
 
 function normalizeResponseRow(row, idx = 0) {
   const payload = inferResponsePayload(row);
+  const meta = inferResponseMeta(row);
   const code = inferResponseCode(row);
   const title = inferResponseTitle(row);
   const submittedAt = inferResponseDate(row);
@@ -213,6 +230,7 @@ function normalizeResponseRow(row, idx = 0) {
     title,
     submittedAt,
     payload,
+    meta,
     raw: row
   };
 }
@@ -264,13 +282,44 @@ function renderFilledFormsMenu() {
   }
 
   for (const item of filledFormsCache) {
-    const row = el("label", { className: "anamnese-item" });
+    const row = el("div", { className: "anamnese-item" });
 
-    const cb = el("input", { type: "checkbox" });
-    cb.checked = true;
-    cb.dataset.uid = item.uid;
+    // Coluna de opções de exportação
+    const opts = el("div", { className: "anamnese-item-checks" });
 
-    const body = el("div");
+    // 1) Perguntas/Respostas (results)
+    const optQA = el("label", { className: "anamnese-opt" });
+    const cbQA = el("input", { type: "checkbox" });
+    cbQA.checked = true;
+    cbQA.dataset.uid = item.uid;
+    cbQA.dataset.part = "qa";
+    optQA.appendChild(cbQA);
+    optQA.appendChild(el("span", { textContent: "Perguntas/Respostas" }));
+
+    // 2) Resultados (results_meta)
+    const optMeta = el("label", { className: "anamnese-opt" });
+    const cbMeta = el("input", { type: "checkbox" });
+    cbMeta.dataset.uid = item.uid;
+    cbMeta.dataset.part = "meta";
+
+    const hasMeta =
+      item.meta !== undefined &&
+      item.meta !== null &&
+      (typeof item.meta === "string" ? item.meta.trim() !== "" : true);
+    cbMeta.checked = !!hasMeta;
+    if (!hasMeta) {
+      cbMeta.checked = false;
+      cbMeta.disabled = true;
+    }
+
+    optMeta.appendChild(cbMeta);
+    optMeta.appendChild(el("span", { textContent: hasMeta ? "Resultados" : "Resultados (sem dados)" }));
+
+    opts.appendChild(optQA);
+    opts.appendChild(optMeta);
+
+    // Corpo
+    const body = el("div", { className: "anamnese-item-body" });
 
     const title = el("div", { className: "anamnese-item-title" });
     title.textContent = item.title + (item.code ? ` (${item.code})` : "");
@@ -281,7 +330,7 @@ function renderFilledFormsMenu() {
     body.appendChild(title);
     body.appendChild(meta);
 
-    row.appendChild(cb);
+    row.appendChild(opts);
     row.appendChild(body);
 
     list.appendChild(row);
@@ -290,20 +339,36 @@ function renderFilledFormsMenu() {
 
 function toggleAnamneseSelection(checked) {
   document
-    .querySelectorAll('#anamneseList input[type="checkbox"][data-uid]')
+    .querySelectorAll('#anamneseList input[type="checkbox"][data-uid][data-part]')
     .forEach((cb) => {
+      if (cb.disabled) return;
       cb.checked = !!checked;
     });
 }
 
 function getSelectedFilledForms() {
-  const selectedIds = new Set(
-    Array.from(
-      document.querySelectorAll('#anamneseList input[type="checkbox"][data-uid]:checked')
-    ).map((cb) => cb.dataset.uid)
-  );
+  const opts = new Map();
 
-  return filledFormsCache.filter((x) => selectedIds.has(x.uid));
+  // captura escolhas (qa / meta) por uid
+  document
+    .querySelectorAll('#anamneseList input[type="checkbox"][data-uid][data-part]')
+    .forEach((cb) => {
+      const uid = cb.dataset.uid;
+      const part = cb.dataset.part; // "qa" | "meta"
+      if (!opts.has(uid)) opts.set(uid, { includeQA: false, includeMeta: false });
+
+      const cur = opts.get(uid);
+      if (part === "qa") cur.includeQA = !!cb.checked;
+      if (part === "meta") cur.includeMeta = !!cb.checked;
+    });
+
+  // seleciona formulários onde pelo menos 1 opção esteja marcada
+  return filledFormsCache
+    .map((x) => {
+      const o = opts.get(x.uid) || { includeQA: false, includeMeta: false };
+      return { ...x, includeQA: !!o.includeQA, includeMeta: !!o.includeMeta };
+    })
+    .filter((x) => x.includeQA || x.includeMeta);
 }
 
 async function loadFilledFormsForCurrentCPF() {
@@ -324,7 +389,7 @@ async function loadFilledFormsForCurrentCPF() {
 
     filledFormsCache = rows
       .map((r, i) => normalizeResponseRow(r, i))
-      .filter((x) => x.payload !== undefined && x.payload !== null);
+      .filter((x) => (x.payload !== undefined && x.payload !== null) || (x.meta !== undefined && x.meta !== null));
 
     // ordena mais recentes primeiro
     filledFormsCache.sort((a, b) => {
@@ -355,7 +420,9 @@ async function loadFilledFormsForCurrentCPF() {
 async function generateSelectedFormsPdf(selectedItems) {
   const JsPDF = window.jspdf?.jsPDF;
   if (!JsPDF) {
-    throw new Error("Biblioteca de PDF não carregou. Verifique os scripts do jsPDF no index.html.");
+    throw new Error(
+      "Biblioteca de PDF não carregou. Verifique os scripts do jsPDF no index.html."
+    );
   }
 
   const doc = new JsPDF({ unit: "pt", format: "a4" });
@@ -364,7 +431,8 @@ async function generateSelectedFormsPdf(selectedItems) {
 
   const cpfDigits = onlyDigits($("#pacCPF")?.value || currentPatient?.cpf || "");
   const patientName =
-    (currentPatient?.nome || $("#pacNome")?.value || "Paciente").trim() || "Paciente";
+    (currentPatient?.nome || $("#pacNome")?.value || "Paciente").trim() ||
+    "Paciente";
   const patientCPF = cpfDigits ? maskCPF(cpfDigits) : "";
   const exportedAt = new Date();
 
@@ -377,7 +445,7 @@ async function generateSelectedFormsPdf(selectedItems) {
     // Título principal
     doc.setFont("helvetica", "bold");
     doc.setFontSize(15);
-    doc.text("Anamnese - Formulários Selecionados", M.left, y);
+    doc.text("Questionários e Formulários", M.left, y);
 
     y += 18;
 
@@ -385,8 +453,12 @@ async function generateSelectedFormsPdf(selectedItems) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9.5);
 
-    const line1 = `Paciente: ${patientName}${patientCPF ? `  |  CPF: ${patientCPF}` : ""}`;
-    const line2 = `Exportado em: ${exportedAt.toLocaleString("pt-BR")}  |  Formulário ${index + 1} de ${total}`;
+    const line1 = `Paciente: ${patientName}${
+      patientCPF ? `  |  CPF: ${patientCPF}` : ""
+    }`;
+    const line2 = `Exportado em: ${exportedAt.toLocaleString(
+      "pt-BR"
+    )}  |  Formulário ${index + 1} de ${total}`;
 
     doc.text(line1, M.left, y);
     y += 14;
@@ -402,7 +474,10 @@ async function generateSelectedFormsPdf(selectedItems) {
     // Título do formulário (com quebra de linha automática)
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
-    const titleLines = doc.splitTextToSize(formTitle || "Formulário", contentWidth);
+    const titleLines = doc.splitTextToSize(
+      formTitle || "Formulário",
+      contentWidth
+    );
     doc.text(titleLines, M.left, y);
     y += titleLines.length * 14;
 
@@ -416,106 +491,207 @@ async function generateSelectedFormsPdf(selectedItems) {
     doc.setDrawColor(220);
     doc.line(M.left, y, pageWidth - M.right, y);
 
-    return y + 10; // startY da tabela
+    return y + 12;
+  }
+
+  function ensureSpace(y, needed, headerArgs) {
+    if (y + needed <= pageHeight - M.bottom) return y;
+    doc.addPage();
+    return drawPageHeader(headerArgs);
+  }
+
+  function buildQARows(payload) {
+    const isPerguntaRespostaArray =
+      Array.isArray(payload) &&
+      payload.every(
+        (x) =>
+          x &&
+          typeof x === "object" &&
+          !Array.isArray(x) &&
+          "pergunta" in x &&
+          "resposta" in x
+      );
+
+    if (isPerguntaRespostaArray) {
+      return payload.map((x, i) => [
+        String(x.pergunta || `Pergunta ${i + 1}`),
+        String(normalizePdfValue(x.resposta))
+      ]);
+    }
+
+    return flattenJsonToRows(payload).map(([campo, resposta]) => [
+      String(campo || ""),
+      String(resposta ?? "")
+    ]);
+  }
+
+  function buildMetaRows(meta) {
+    if (meta === null || meta === undefined || meta === "") {
+      return [["(sem resultados)", ""]];
+    }
+    if (typeof meta !== "object") {
+      return [["Resultado", String(normalizePdfValue(meta))]];
+    }
+    return flattenJsonToRows(meta).map(([campo, resposta]) => [
+      String(campo || ""),
+      String(resposta ?? "")
+    ]);
   }
 
   selectedItems.forEach((item, idx) => {
     if (idx > 0) doc.addPage();
 
-    const title = item.title + (item.code ? ` (${item.code})` : "");
-    const isPerguntaRespostaArray =
-  Array.isArray(item.payload) &&
-  item.payload.every(
-    (x) =>
-      x &&
-      typeof x === "object" &&
-      !Array.isArray(x) &&
-      "pergunta" in x &&
-      "resposta" in x
-  );
-
-const rows = isPerguntaRespostaArray
-  ? item.payload.map((x, i) => [
-      String(x.pergunta || `Pergunta ${i + 1}`),
-      String(normalizePdfValue(x.resposta))
-    ])
-  : flattenJsonToRows(item.payload).map(([campo, resposta]) => [
-      String(campo || ""),
-      String(resposta ?? "")
-    ]);
-    const startY = drawPageHeader({
-      formTitle: title,
+    const headerArgs = {
+      formTitle: item.title + (item.code ? ` (${item.code})` : ""),
       formDate: item.submittedAt,
       index: idx,
       total: selectedItems.length
-    });
+    };
 
-    if (typeof doc.autoTable === "function") {
-      doc.autoTable({
-        startY,
-        margin: { left: M.left, right: M.right, bottom: M.bottom },
-        head: [["Pergunta", "Resposta"]],
-        body: rows,
-        theme: "grid",
-        styles: {
-          font: "helvetica",
-          fontSize: 9,
-          cellPadding: 4,
-          overflow: "linebreak",
-          valign: "top",
-          textColor: 40,
-          lineColor: 225,
-          lineWidth: 0.5
-        },
-        headStyles: {
-          fillColor: [41, 128, 185], // azul
-          textColor: 255,
-          fontStyle: "bold",
-          fontSize: 9.5
-        },
-        alternateRowStyles: {
-          fillColor: [248, 250, 252]
-        },
-        columnStyles: {
-        0: { cellWidth: contentWidth * 0.78, fontStyle: "bold" }, // pergunta (maior)
-        1: { cellWidth: contentWidth * 0.22 }                     // resposta (menor)
-        },
-        didDrawPage: (data) => {
-          // Se a tabela quebrar em mais páginas, repete um mini rodapé simples
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(8);
-          doc.setTextColor(120);
-          doc.text(
-            `Página ${doc.internal.getNumberOfPages()}`,
-            pageWidth - M.right - 40,
-            pageHeight - 14
-          );
+    let y = drawPageHeader(headerArgs);
+
+    const includeQA = item.includeQA !== false; // default true
+    const includeMeta = !!item.includeMeta;
+
+    // =======================
+    // Perguntas / Respostas
+    // =======================
+    if (includeQA) {
+      const rows = buildQARows(item.payload ?? null);
+
+      // Se não tiver payload, registra no PDF
+      if (!rows || !rows.length) {
+        y = ensureSpace(y, 22, headerArgs);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.text("Perguntas/Respostas: sem dados.", M.left, y);
+        y += 14;
+      } else if (typeof doc.autoTable === "function") {
+        doc.autoTable({
+          startY: y,
+          margin: { left: M.left, right: M.right, bottom: M.bottom },
+          head: [["Pergunta", "Resposta"]],
+          body: rows,
+          theme: "grid",
+          styles: {
+            font: "helvetica",
+            fontSize: 9,
+            cellPadding: 4,
+            overflow: "linebreak",
+            valign: "top",
+            textColor: 40,
+            lineColor: 225,
+            lineWidth: 0.5
+          },
+          headStyles: {
+            fillColor: [41, 128, 185],
+            textColor: 255,
+            fontStyle: "bold",
+            fontSize: 9.5
+          },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: {
+            0: { cellWidth: contentWidth * 0.78, fontStyle: "bold" },
+            1: { cellWidth: contentWidth * 0.22 }
+          },
+          didDrawPage: () => {
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(8);
+            doc.setTextColor(120);
+            doc.text(
+              `Página ${doc.internal.getNumberOfPages()}`,
+              pageWidth - M.right - 40,
+              pageHeight - 14
+            );
+          }
+        });
+
+        y = (doc.lastAutoTable?.finalY || y) + 16;
+      } else {
+        // Fallback sem autoTable
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+
+        for (const [campo, resposta] of rows) {
+          const txt = `${campo}: ${resposta}`;
+          const lines = doc.splitTextToSize(txt, contentWidth);
+
+          y = ensureSpace(y, lines.length * 12 + 8, headerArgs);
+          doc.text(lines, M.left, y);
+          y += lines.length * 12 + 6;
         }
-      });
-    } else {
-      // Fallback se autoTable não carregar
-      let y = startY;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
 
-      for (const [campo, resposta] of rows) {
-        const label = `${campo}: `;
-        const txt = `${label}${resposta}`;
-        const lines = doc.splitTextToSize(txt, contentWidth);
-
-        if (y + lines.length * 12 > pageHeight - M.bottom) {
-          doc.addPage();
-          y = drawPageHeader({
-            formTitle: title,
-            formDate: item.submittedAt,
-            index: idx,
-            total: selectedItems.length
-          });
-        }
-
-        doc.text(lines, M.left, y);
-        y += lines.length * 12 + 6;
+        y += 8;
       }
+    }
+
+    // =======================
+    // Resultados (results_meta)
+    // =======================
+    if (includeMeta) {
+      const metaPayload = item.meta ?? null;
+      const rowsMeta = buildMetaRows(metaPayload);
+
+      y = ensureSpace(y, 26, headerArgs);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(40);
+      doc.text("Resultados (indicadores)", M.left, y);
+      y += 10;
+
+      if (typeof doc.autoTable === "function") {
+        doc.autoTable({
+          startY: y,
+          margin: { left: M.left, right: M.right, bottom: M.bottom },
+          head: [["Indicador", "Valor"]],
+          body: rowsMeta,
+          theme: "grid",
+          styles: {
+            font: "helvetica",
+            fontSize: 9,
+            cellPadding: 4,
+            overflow: "linebreak",
+            valign: "top",
+            textColor: 40,
+            lineColor: 225,
+            lineWidth: 0.5
+          },
+          headStyles: {
+            fillColor: [99, 102, 241],
+            textColor: 255,
+            fontStyle: "bold",
+            fontSize: 9.5
+          },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: {
+            0: { cellWidth: contentWidth * 0.62, fontStyle: "bold" },
+            1: { cellWidth: contentWidth * 0.38 }
+          }
+        });
+
+        y = (doc.lastAutoTable?.finalY || y) + 10;
+      } else {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        for (const [k, v] of rowsMeta) {
+          const txt = `${k}: ${v}`;
+          const lines = doc.splitTextToSize(txt, contentWidth);
+
+          y = ensureSpace(y, lines.length * 12 + 8, headerArgs);
+          doc.text(lines, M.left, y);
+          y += lines.length * 12 + 6;
+        }
+      }
+    }
+
+    // Se o usuário desmarcar tudo e mesmo assim passar no filtro (não deveria),
+    // deixa uma nota
+    if (!includeQA && !includeMeta) {
+      y = ensureSpace(y, 18, headerArgs);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text("Nada selecionado para este formulário.", M.left, y);
     }
   });
 
