@@ -594,8 +594,8 @@ body[data-theme="light"] .btn.sec {
 
 .anamnese-item {
   display: grid;
-  grid-template-columns: 20px 1fr;
-  gap: 8px;
+  grid-template-columns: 190px 1fr;
+  gap: 10px;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -603,10 +603,48 @@ body[data-theme="light"] .btn.sec {
   background: rgba(148, 163, 184, 0.05);
 }
 
-.anamnese-item input[type="checkbox"] {
-  margin-top: 2px;
+.anamnese-item-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
+.anamnese-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--muted);
+  user-select: none;
+}
+
+.anamnese-opt input[type="checkbox"] {
+  margin: 2px 0 0 0;
+}
+
+.anamnese-opt input[type="checkbox"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.anamnese-item-body {
+  min-width: 0;
+}
+
+/* Mobile: empilha e deixa as opções lado a lado */
+@media (max-width: 720px) {
+  .anamnese-item {
+    grid-template-columns: 1fr;
+  }
+
+  .anamnese-item-checks {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+}
 .anamnese-item-title {
   font-weight: 700;
   color: var(--text);
