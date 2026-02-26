@@ -48,7 +48,7 @@ async function dbPatchBy(table, column, value, patch) {
 }
 
 
-const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
+const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/sistema-de-cadastro-de-formularios-v.2.0/";
 
 /* ===== HELPERS DOM ===== */
 const $ = (s) => document.querySelector(s);
@@ -443,14 +443,14 @@ async function generateSelectedFormsPdf(selectedItems) {
     let y = M.top;
 
     // Título principal
-    doc.setFont("helvetica", "bold");
+    doc.setFont("verdana", "bold");
     doc.setFontSize(15);
     doc.text("Questionários e Formulários", M.left, y);
 
     y += 18;
 
     // Infos do paciente
-    doc.setFont("helvetica", "normal");
+    doc.setFont("verdana", "normal");
     doc.setFontSize(9.5);
 
     const line1 = `Paciente: ${patientName}${
@@ -472,7 +472,7 @@ async function generateSelectedFormsPdf(selectedItems) {
     y += 14;
 
     // Título do formulário (com quebra de linha automática)
-    doc.setFont("helvetica", "bold");
+    doc.setFont("verdana", "bold");
     doc.setFontSize(12);
     const titleLines = doc.splitTextToSize(
       formTitle || "Formulário",
@@ -482,7 +482,7 @@ async function generateSelectedFormsPdf(selectedItems) {
     y += titleLines.length * 14;
 
     // Data do formulário
-    doc.setFont("helvetica", "normal");
+    doc.setFont("verdana", "normal");
     doc.setFontSize(9.5);
     doc.text(`Preenchido em: ${formatDateTimeBR(formDate)}`, M.left, y);
     y += 12;
@@ -542,7 +542,7 @@ async function generateSelectedFormsPdf(selectedItems) {
     if (idx > 0) doc.addPage();
 
     const headerArgs = {
-      formTitle: item.title + (item.code ? ` (${item.code})` : ""),
+      formTitle: item.title,
       formDate: item.submittedAt,
       index: idx,
       total: selectedItems.length
@@ -696,7 +696,7 @@ async function generateSelectedFormsPdf(selectedItems) {
   });
 
   const ts = exportedAt.toISOString().replace(/\D/g, "").slice(0, 14);
-  const filename = `anamnese_${onlyDigits(cpfDigits) || "sem_cpf"}_${ts}.pdf`;
+  const filename = `Formulários_${patientName}_${onlyDigits(cpfDigits) || "sem_cpf"}.pdf`;
   doc.save(filename);
 }
 
@@ -1940,7 +1940,7 @@ $("#btnCopyLink")?.addEventListener("click", async () => {
     setMsg(msgBox, e?.message || "Não consegui gerar o PDF.", "err");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Baixar PDF da Anamnese";
+    btn.textContent = "Baixar PDF dos formulários";
   }
 });
 
@@ -2020,6 +2020,5 @@ async function doLogin() {
   enterLookupMode();
   $("#pacCPF").focus();
 }
-
 
 
