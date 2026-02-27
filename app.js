@@ -48,7 +48,7 @@ async function dbPatchBy(table, column, value, patch) {
 }
 
 
-const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/sistema-de-cadastro-de-formularios-v.2.0/";
+const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
 
 /* ===== HELPERS DOM ===== */
 const $ = (s) => document.querySelector(s);
@@ -2020,5 +2020,6 @@ async function doLogin() {
   enterLookupMode();
   $("#pacCPF").focus();
 }
+
 
 
