@@ -48,7 +48,7 @@ async function dbPatchBy(table, column, value, patch) {
 }
 
 
-const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/area-do-paciente-v2/";
+const PATIENT_PORTAL_URL = "https://integradaneuropsicologia.github.io/sistema-de-cadastro-de-formularios-v.2.0/";
 
 /* ===== HELPERS DOM ===== */
 const $ = (s) => document.querySelector(s);
@@ -525,18 +525,125 @@ async function generateSelectedFormsPdf(selectedItems) {
     ]);
   }
 
-  function buildMetaRows(meta) {
-    if (meta === null || meta === undefined || meta === "") {
-      return [["(sem resultados)", ""]];
+  function isPlainObject(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function buildMetaRows(meta) {
+  if (meta === null || meta === undefined || meta === "") {
+    return [["(sem resultados)", ""]];
+  }
+
+  // =========================
+  // 1) NOVO FORMATO: results_meta como ARRAY
+  // =========================
+  if (Array.isArray(meta)) {
+    if (!meta.length) return [["(sem resultados)", ""]];
+
+    const allPrimitive = meta.every(
+      (x) => x == null || ["string", "number", "boolean"].includes(typeof x)
+    );
+    if (allPrimitive) {
+      return [["Resultados", meta.map(normalizePdfValue).join(", ")]];
     }
-    if (typeof meta !== "object") {
-      return [["Resultado", String(normalizePdfValue(meta))]];
+
+    // meta-array típico: [{key,label,sum,percent,interpretacao...}, ...]
+    const looksLikeMetaArray = meta.every(
+      (x) =>
+        isPlainObject(x) &&
+        (("key" in x) || ("label" in x)) &&
+        (("sum" in x) || ("value" in x))
+    );
+
+    if (looksLikeMetaArray) {
+      const rows = [];
+
+      meta.forEach((it) => {
+        const key = String(it.key || "").trim();
+        const label = String(it.label || humanizeKey(key) || "Indicador").trim();
+
+        const val = ("sum" in it) ? it.sum : it.value;
+        let valueTxt = normalizePdfValue(val);
+
+        // se tiver percent, anexa (opcional, mas fica bem)
+        if (it.percent !== null && it.percent !== undefined && it.percent !== "") {
+          valueTxt += ` (${normalizePdfValue(it.percent)}%)`;
+        }
+
+        rows.push([label, valueTxt]);
+
+        // se tiver interpretação, coloca logo abaixo
+        if (it.interpretacao) {
+          rows.push([`${label} › Interpretação`, normalizePdfValue(it.interpretacao)]);
+        }
+      });
+
+      return rows.length ? rows : [["(sem resultados)", ""]];
     }
+
+    // array “qualquer” -> fallback genérico
     return flattenJsonToRows(meta).map(([campo, resposta]) => [
       String(campo || ""),
       String(resposta ?? "")
     ]);
   }
+
+  // =========================
+  // 2) FORMATO ANTIGO: results_meta como OBJETO (JSON)
+  // =========================
+  if (isPlainObject(meta)) {
+    const entries = Object.entries(meta);
+
+    // caso “flat”: chave -> número/string/bool e possivelmente *_interpretacao
+    const isFlat = entries.every(
+      ([_, v]) => v == null || ["string", "number", "boolean"].includes(typeof v)
+    );
+
+    if (isFlat) {
+      const rows = [];
+      const keys = Object.keys(meta);
+
+      const baseKeys = keys
+        .filter((k) => !String(k).endsWith("_interpretacao"))
+        .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+
+      const used = new Set();
+
+      for (const k of baseKeys) {
+        rows.push([humanizeKey(k), normalizePdfValue(meta[k])]);
+        used.add(k);
+
+        const ik = `${k}_interpretacao`;
+        if (ik in meta && meta[ik] !== null && meta[ik] !== undefined && String(meta[ik]).trim() !== "") {
+          rows.push([`${humanizeKey(k)} › Interpretação`, normalizePdfValue(meta[ik])]);
+          used.add(ik);
+        }
+      }
+
+      // sobras (qualquer outra chave fora do padrão)
+      const leftovers = keys
+        .filter((k) => !used.has(k))
+        .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+
+      for (const k of leftovers) {
+        rows.push([humanizeKey(k), normalizePdfValue(meta[k])]);
+      }
+
+      return rows.length ? rows : [["(sem resultados)", ""]];
+    }
+
+    // objeto complexo -> fallback genérico
+    return flattenJsonToRows(meta).map(([campo, resposta]) => [
+      String(campo || ""),
+      String(resposta ?? "")
+    ]);
+  }
+
+  // =========================
+  // 3) PRIMITIVO
+  // =========================
+  return [["Resultado", String(normalizePdfValue(meta))]];
+}
 
   selectedItems.forEach((item, idx) => {
     if (idx > 0) doc.addPage();
@@ -2020,6 +2127,5 @@ async function doLogin() {
   enterLookupMode();
   $("#pacCPF").focus();
 }
-
 
 
