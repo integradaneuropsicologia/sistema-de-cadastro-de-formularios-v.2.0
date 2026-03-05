@@ -1057,6 +1057,36 @@ let statusFilter = "todos";
 let testsLoadError = null;
 let filledFormsCache = [];
 
+let testsUiRestore = null;
+
+function escapeAttrValue(v) {
+  return String(v || "").replace(/\\/g, "\\\\").replace(/"/g, '\"');
+}
+
+function captureTestsUiRestore(anchorCode = "", anchorGroupKey = "") {
+  const grid = $("#testsGrid");
+  const open = new Set();
+
+  if (grid) {
+    grid.querySelectorAll('details.test-group[open]').forEach((d) => {
+      const k = d.dataset.groupKey;
+      if (k) open.add(k);
+    });
+  }
+
+  if (anchorGroupKey) open.add(String(anchorGroupKey).trim());
+
+  return {
+    openGroups: Array.from(open),
+    anchorCode: String(anchorCode || "").trim(),
+    anchorGroupKey: String(anchorGroupKey || "").trim(),
+    scrollY: window.scrollY || 0
+  };
+}
+
+
+// Seleções temporárias de testes (quando o paciente ainda não existe no banco)
+let pendingLiberados = new Set();
 /* ===== SOURCE NORMALIZATION ===== */
 function normalizeSourceLabel(raw) {
   const s = (raw || "").trim();
@@ -1129,10 +1159,16 @@ function withinAgeRange(test, ageYears) {
 }
 
 function patientAlreadyHasTest(code) {
-  // NOVO: agora vem de JSONB (patients.tests_liberados / patients.tests_feitos)
-  if (!currentPatient || !code) return false;
-  return patientHasLiberado(code) || patientHasFeito(code);
+  const c = String(code || "").trim();
+  if (!c) return false;
+
+  // Modo update: vem do banco (JSONB)
+  if (currentPatient) return patientHasLiberado(c) || patientHasFeito(c);
+
+  // Modo create: considera as seleções locais (antes de salvar)
+  return mode === "create" && pendingLiberados.has(c);
 }
+
 
 function patientIsHiddenFromDoneList(p) {
   const v = getAnyField(p, ["ocultar_concluido"]);
@@ -1487,20 +1523,130 @@ renderTests();
 }
 
 function testStatus(t) {
-  // NOVO: baseado em JSONB
-  const code = t.code;
+  const code = String(t?.code || "").trim();
+  if (!code) return "cadastrar";
+
+  // Modo update: baseado em JSONB
   const liberado = !!(currentPatient && patientHasLiberado(code));
   const feito = !!(currentPatient && patientHasFeito(code));
 
   if (feito) return "preenchido";
   if (liberado) return "ja";
+
+  // Modo create: seleção local
+  if (!currentPatient && mode === "create" && pendingLiberados.has(code)) return "ja";
+
   return "cadastrar";
+}
+
+
+
+function isPendingTest(code) {
+  const c = String(code || "").trim();
+  return !currentPatient && mode === "create" && pendingLiberados.has(c);
+}
+
+async function patchPatientTests(nextLiberadosSet, nextFeitosSet) {
+  const msgBox = $("#pacMsg");
+
+  const cpfDigits = onlyDigits($("#pacCPF")?.value || currentPatient?.cpf || "");
+  if (!cpfDigits) throw new Error("CPF não informado.");
+
+  // usa a chave real do banco (pode estar com máscara)
+  let cpfKey = currentPatient?.cpf || cpfDigits.padStart(11, "0");
+  if (!currentPatient?.cpf) {
+    const exists = await findPatientByCPF(cpfDigits);
+    if (exists?.cpf) cpfKey = exists.cpf;
+  }
+
+  const patch = { tests_liberados: setToSortedArray(nextLiberadosSet) };
+  if (nextFeitosSet) patch.tests_feitos = setToSortedArray(nextFeitosSet);
+
+  const patched = await dbPatchBy(DB.PATIENTS, "cpf", cpfKey, patch);
+  if (patched) currentPatient = patched;
+
+  // atualiza lista de concluídos (depende de liberados/feitos)
+  await refreshAllDonePatientsCache();
+
+  setMsg(msgBox, "Testes atualizados.", "ok");
+  renderTests();
+}
+
+async function cadastrarTeste(code) {
+  const c = String(code || "").trim();
+  if (!c) return;
+
+  // Modo create (antes de salvar o paciente)
+  if (!currentPatient) {
+    pendingLiberados.add(c);
+    setMsg($("#pacMsg"), `Teste ${c} selecionado. (Vai salvar quando você clicar em Salvar)`, "ok");
+    renderTests();
+    return;
+  }
+
+  try {
+    setMsg($("#pacMsg"), `Cadastrando ${c}…`);
+    const nextLiberados = new Set(patientLiberadosSet(currentPatient));
+    nextLiberados.add(c);
+
+    await patchPatientTests(nextLiberados);
+  } catch (e) {
+    console.error(e);
+    setMsg($("#pacMsg"), "Erro ao cadastrar teste: " + (e?.message || e), "err");
+  }
+}
+
+async function descadastrarTeste(code, status = "") {
+  const c = String(code || "").trim();
+  if (!c) return;
+
+  // Modo create (antes de salvar o paciente)
+  if (!currentPatient) {
+    pendingLiberados.delete(c);
+    setMsg($("#pacMsg"), `Teste ${c} removido da seleção.`, "ok");
+    renderTests();
+    return;
+  }
+
+  const isPreenchido = status === "preenchido";
+  if (isPreenchido) {
+    const ok = confirm(
+      `O teste ${c} está como "preenchido".\n\nDescadastrar vai remover o teste e apagar o status de preenchimento.\n\nConfirma?`
+    );
+    if (!ok) { testsUiRestore = null; return; }
+  }
+
+  try {
+    setMsg($("#pacMsg"), `Descadastrando ${c}…`);
+
+    const nextLiberados = new Set(patientLiberadosSet(currentPatient));
+    const nextFeitos = new Set(patientFeitosSet(currentPatient));
+
+    nextLiberados.delete(c);
+    nextFeitos.delete(c);
+
+    await patchPatientTests(nextLiberados, nextFeitos);
+  } catch (e) {
+    console.error(e);
+    setMsg($("#pacMsg"), "Erro ao descadastrar teste: " + (e?.message || e), "err");
+  }
 }
 
 function renderTests() {
   const grid = $("#testsGrid");
   const info = $("#testsInfo");
   if (!grid || !info) return;
+
+  // preserva posição e grupos abertos para não "voltar pro topo" ao re-renderizar
+  const prevScrollY = window.scrollY || 0;
+  const prevOpenGroups = new Set();
+  grid.querySelectorAll("details.test-group[open]").forEach((d) => {
+    const k = d.dataset.groupKey;
+    if (k) prevOpenGroups.add(k);
+  });
+
+  const restore = testsUiRestore;
+  testsUiRestore = null;
 
   grid.innerHTML = "";
     if (testsLoadError) {
@@ -1601,8 +1747,9 @@ for (const k of groupOrder) {
 
   // AGORA: grupo vira <details> (fechado por padrão)
   const groupWrap = el("details", { className: "test-group" });
+  groupWrap.dataset.groupKey = k;
   groupWrap.classList.add(`source-${k}`);
-  groupWrap.open = false;
+  groupWrap.open = ((restore?.openGroups || []).includes(k) || prevOpenGroups.has(k));
 
   // Cabeçalho clicável
   const head = el("summary", { className: "group-head" });
@@ -1627,62 +1774,40 @@ for (const k of groupOrder) {
     const st = testStatus(t);
 
     const wrap = el("div", { className: "check" });
+    wrap.dataset.testCode = t.code;
     wrap.classList.add(`source-${t.srcKey}`);
 
-    // Coluna esquerda
-    let leftBox;
-    if (st === "cadastrar") {
-      leftBox = el("input", { type: "checkbox", id: `cb_${t.code}` });
-    } else {
-      leftBox = el("div", { style: "width:16px;flex-shrink:0;" });
-    }
+    // Botão ação (Cadastrar / Descadastrar)
+    const actionBtn = el("button", {
+      type: "button",
+      className: "btn small test-action" + (st === "cadastrar" ? "" : " danger"),
+      textContent: st === "cadastrar" ? "Cadastrar" : "Descadastrar"
+    });
 
-    // Meio
+    actionBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      // guarda posição e grupo aberto para não pular pro topo ao re-renderizar
+      testsUiRestore = captureTestsUiRestore(t.code, k);
+
+      if (st === "cadastrar") cadastrarTeste(t.code);
+      else descadastrarTeste(t.code, st);
+    });
+
+    // Meio (somente código + título)
     const box = el("div", { className: "box" });
     const codeEl = el("div", { className: "code", textContent: t.code });
     const labelEl = el("div", { className: "title", textContent: t.label });
     box.appendChild(codeEl);
     box.appendChild(labelEl);
 
-    // Tag status
-    let tagClass = "new";
-    let tagText = "cadastrar";
-    if (st === "ja") { tagClass = "ok"; tagText = "já registrado"; }
-    if (st === "preenchido") { tagClass = "done"; tagText = "preenchido"; }
+    // Ações no rodapé do card
+    const actions = el("div", { className: "test-actions" });
+    actions.appendChild(actionBtn);
 
-    const tag = el("span", { className: "tag " + tagClass, textContent: tagText });
-
-    // Chip origem
-    const srcChip = el("span", {
-      className: `source-chip ${t.srcKey}`,
-      textContent: t.srcLabel
-    });
-
-    wrap.appendChild(leftBox);
     wrap.appendChild(box);
-    wrap.appendChild(tag);
-    wrap.appendChild(srcChip);
-
-    // Remover teste (quando já está liberado OU já foi preenchido)
-    if (st === "ja" || st === "preenchido") {
-      wrap.appendChild(el("div", { style: "flex-basis:100%;" }));
-
-      const rmWrap = el("label", { className: "rmbox" });
-      const rmChk = el("input", {
-        type: "checkbox",
-        id: `rm_${t.code}`,
-        className: "rmchk"
-      });
-      const rmTxt = el("div", {});
-      const strongLine = el("div", { className: "rmnote", textContent: "Remover" });
-      const smallLine = el("div", { textContent: "" });
-
-      rmTxt.appendChild(strongLine);
-      rmTxt.appendChild(smallLine);
-      rmWrap.appendChild(rmChk);
-      rmWrap.appendChild(rmTxt);
-      wrap.appendChild(rmWrap);
-    }
+    wrap.appendChild(actions);
 
     inner.appendChild(wrap);
   }
@@ -1693,6 +1818,22 @@ for (const k of groupOrder) {
   
 }
 renderAllDonePatientsDropdown();
+
+  // restaura scroll (e mantém o card clicado "na tela")
+  requestAnimationFrame(() => {
+    const targetCode = restore?.anchorCode;
+    const y = (restore?.scrollY ?? prevScrollY) || 0;
+
+    if (targetCode) {
+      const card = grid.querySelector(`[data-test-code="${escapeAttrValue(targetCode)}"]`);
+      if (card && typeof card.scrollIntoView === "function") {
+        card.scrollIntoView({ block: "center" });
+        return;
+      }
+    }
+
+    window.scrollTo({ top: y });
+  });
 }
 
 /* ===== LOOKUP MODE ===== */
@@ -1706,6 +1847,8 @@ function enterLookupMode() {
   $("#pacNasc").value = "";
   $("#pacEmail").value = "";
   $("#pacWhats").value = "";
+
+  pendingLiberados = new Set();
 }
 
 /* ===== PACIENTE ===== */
@@ -1735,6 +1878,7 @@ async function carregarPorCPF() {
   if (patient) {
     currentPatient = patient;
     mode = "update";
+    pendingLiberados = new Set();
 
     $("#pacNome").value = currentPatient.nome || "";
     $("#pacNasc").value = (currentPatient.data_nascimento || "").slice(0, 10);
@@ -1766,6 +1910,8 @@ async function carregarPorCPF() {
 
     currentPatient = null;
     mode = "create";
+    pendingLiberados = new Set();
+    pendingLiberados = new Set();
 
     $("#pacNome").value = "";
     $("#pacNasc").value = "";
@@ -1841,17 +1987,12 @@ async function salvar() {
         tests_liberados: [],
         tests_feitos: []
       };
-
-      // Marca como "liberado" os checkados
-      const liberados = new Set();
-      for (const t of testsCatalog) {
-        const cb = document.querySelector(`#cb_${t.code}`);
-        if (cb && cb.checked) liberados.add(t.code);
-      }
-      row.tests_liberados = setToSortedArray(liberados);
-
+      // Testes selecionados (modo create) ficam no Set pendingLiberados
+      row.tests_liberados = setToSortedArray(pendingLiberados);
       const created = await dbCreate(DB.PATIENTS, row);
       currentPatient = created || row;
+      mode = "update";
+      pendingLiberados = new Set();
       setMsg($("#pacMsg"), "Cadastro criado com sucesso.", "ok");
       renderTests();
     } else {
@@ -1862,64 +2003,23 @@ async function salvar() {
         whatsapp: whatsE164
       };
 
-      let mudou = false;
+      // Observação: agora os testes são cadastrados/descadastrados pelos botões do card.
+      let cpfKey = cpf;
 
-      // Base atual (do banco)
-      const baseLiberados = patientLiberadosSet(currentPatient);
-      const baseFeitos = patientFeitosSet(currentPatient);
-      const liberados = new Set(baseLiberados);
-      const feitos = new Set(baseFeitos);
-
-      // Liberar novos testes (checkbox em cards "cadastrar")
-      for (const t of testsCatalog) {
-        const cbAdd = document.querySelector(`#cb_${t.code}`);
-        if (cbAdd && cbAdd.checked) {
-          liberados.add(t.code);
-        }
+      if (currentPatient && currentPatient.cpf) {
+        cpfKey = currentPatient.cpf;
+      } else {
+        const exists = await findPatientByCPF(cpf);
+        if (exists && exists.cpf) cpfKey = exists.cpf;
       }
 
-      // Remover testes (checkbox em cards "já" ou "preenchido")
-      for (const t of testsCatalog) {
-        const st = testStatus(t);
-        if (st === "ja" || st === "preenchido") {
-          const cbRm = document.querySelector(`#rm_${t.code}`);
-          if (cbRm && cbRm.checked) {
-            liberados.delete(t.code);
-            feitos.delete(t.code); // reset completo do teste
-          }
-        }
-      }
+      const patched = await dbPatchBy(DB.PATIENTS, "cpf", cpfKey, update);
+      if (patched) currentPatient = patched;
 
-      // Se mudou, grava JSONB
-      if (!setsEqual(baseLiberados, liberados) || !setsEqual(baseFeitos, feitos)) {
-        update.tests_liberados = setToSortedArray(liberados);
-        update.tests_feitos = setToSortedArray(feitos);
-        mudou = true;
-      }
-
-     let cpfKey = cpf;
-
-if (currentPatient && currentPatient.cpf) {
-  cpfKey = currentPatient.cpf;
-} else {
-  const exists = await findPatientByCPF(cpf);
-  if (exists && exists.cpf) cpfKey = exists.cpf;
-}
-const patched = await dbPatchBy(DB.PATIENTS, "cpf", cpfKey, update);
-if (patched) currentPatient = patched;
-
-
-      setMsg(
-        $("#pacMsg"),
-        mudou
-          ? "Cadastro atualizado (alterações de testes aplicadas)."
-          : "Cadastro atualizado.",
-        "ok"
-      );
+      setMsg($("#pacMsg"), "Cadastro atualizado.", "ok");
 
       await carregarPorCPF();
-    }
-  } catch (e) {
+    }  } catch (e) {
     if (e && e.message && !e.message.startsWith("sem ")) {
       console.error(e.message);
       setMsg($("#pacMsg"), "Erro ao salvar: " + e.message, "err");
