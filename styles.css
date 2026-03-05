@@ -182,6 +182,37 @@ body[data-theme="light"] .btn.sec {
   color: #111827;
 }
 
+
+.btn.small {
+  padding: 7px 10px;
+  font-size: 0.78rem;
+  border-radius: 9px;
+}
+
+.btn.test-action {
+  white-space: nowrap;
+}
+
+/* Rodapé de ações do card de teste */
+.test-actions {
+  flex-basis: 100%;
+  margin-top: 10px;
+}
+
+.test-actions .btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.btn.danger {
+  background: var(--err);
+}
+
+body[data-theme="light"] .btn.danger {
+  background: var(--err);
+  color: #fff;
+}
+
 /* Toolbar */
 .toolbar {
   display: flex;
