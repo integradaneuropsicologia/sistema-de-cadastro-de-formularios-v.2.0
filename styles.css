@@ -696,3 +696,10 @@ body[data-theme="light"] .btn.danger {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+.test-action:disabled,
+.test-action.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
