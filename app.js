@@ -379,6 +379,8 @@ async function loadFilledFormsForCurrentCPF() {
   if (!cpf) {
     if (wrap) hide(wrap);
     filledFormsCache = [];
+    renderFilledFormsMenu();
+    renderTests();
     return;
   }
 
@@ -389,7 +391,11 @@ async function loadFilledFormsForCurrentCPF() {
 
     filledFormsCache = rows
       .map((r, i) => normalizeResponseRow(r, i))
-      .filter((x) => (x.payload !== undefined && x.payload !== null) || (x.meta !== undefined && x.meta !== null));
+      .filter(
+        (x) =>
+          (x.payload !== undefined && x.payload !== null) ||
+          (x.meta !== undefined && x.meta !== null)
+      );
 
     // ordena mais recentes primeiro
     filledFormsCache.sort((a, b) => {
@@ -399,6 +405,7 @@ async function loadFilledFormsForCurrentCPF() {
     });
 
     renderFilledFormsMenu();
+    renderTests();
 
     if (!filledFormsCache.length) {
       setMsg(msgBox, "CPF encontrado, mas sem formulários preenchidos na tabela respostas.", "warn");
@@ -409,6 +416,7 @@ async function loadFilledFormsForCurrentCPF() {
     console.error("Erro ao buscar respostas:", e);
     filledFormsCache = [];
     renderFilledFormsMenu();
+    renderTests();
     setMsg(
       msgBox,
       "Erro ao buscar formulários na tabela respostas: " + (e?.message || e),
@@ -1250,6 +1258,13 @@ function patientHasFeito(code) {
   return patientFeitosSet().has(String(code || "").trim());
 }
 
+function patientHasFilledResponse(code) {
+  const c = String(code || "").trim();
+  if (!c) return false;
+
+  return filledFormsCache.some((item) => String(item?.code || "").trim() === c);
+}
+
 function setToSortedArray(set) {
   return Array.from(set || [])
     .map(String)
@@ -1526,9 +1541,12 @@ function testStatus(t) {
   const code = String(t?.code || "").trim();
   if (!code) return "cadastrar";
 
-  // Modo update: baseado em JSONB
+  // Modo update: baseado em JSONB + respostas já preenchidas
   const liberado = !!(currentPatient && patientHasLiberado(code));
-  const feito = !!(currentPatient && patientHasFeito(code));
+  const feito = !!(
+    currentPatient &&
+    (patientHasFeito(code) || patientHasFilledResponse(code))
+  );
 
   if (feito) return "preenchido";
   if (liberado) return "ja";
@@ -1608,12 +1626,20 @@ async function descadastrarTeste(code, status = "") {
     return;
   }
 
-  const isPreenchido = status === "preenchido";
+  const isPreenchido =
+    status === "preenchido" ||
+    patientHasFeito(c) ||
+    patientHasFilledResponse(c);
+
   if (isPreenchido) {
-    const ok = confirm(
-      `O teste ${c} está como "preenchido".\n\nDescadastrar vai remover o teste e apagar o status de preenchimento.\n\nConfirma?`
+    setMsg(
+      $("#pacMsg"),
+      `O teste ${c} já possui formulário preenchido e não pode ser descadastrado.`,
+      "warn"
     );
-    if (!ok) { testsUiRestore = null; return; }
+    testsUiRestore = null;
+    renderTests();
+    return;
   }
 
   try {
@@ -1777,23 +1803,34 @@ for (const k of groupOrder) {
     wrap.dataset.testCode = t.code;
     wrap.classList.add(`source-${t.srcKey}`);
 
-    // Botão ação (Cadastrar / Descadastrar)
-    const actionBtn = el("button", {
-      type: "button",
-      className: "btn small test-action" + (st === "cadastrar" ? "" : " danger"),
-      textContent: st === "cadastrar" ? "Cadastrar" : "Descadastrar"
-    });
+const isLocked = st === "preenchido";
 
-    actionBtn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
+const actionBtn = el("button", {
+  type: "button",
+  className:
+    "btn small test-action" +
+    (st === "cadastrar" ? "" : " danger") +
+    (isLocked ? " disabled" : ""),
+  textContent: st === "cadastrar" ? "Cadastrar" : "Descadastrar",
+  disabled: isLocked
+});
 
-      // guarda posição e grupo aberto para não pular pro topo ao re-renderizar
-      testsUiRestore = captureTestsUiRestore(t.code, k);
+if (isLocked) {
+  actionBtn.title = "Este teste já possui formulário preenchido e não pode ser descadastrado.";
+}
 
-      if (st === "cadastrar") cadastrarTeste(t.code);
-      else descadastrarTeste(t.code, st);
-    });
+actionBtn.addEventListener("click", (ev) => {
+  ev.preventDefault();
+  ev.stopPropagation();
+
+  if (isLocked) return;
+
+  // guarda posição e grupo aberto para não pular pro topo ao re-renderizar
+  testsUiRestore = captureTestsUiRestore(t.code, k);
+
+  if (st === "cadastrar") cadastrarTeste(t.code);
+  else descadastrarTeste(t.code, st);
+});
 
     // Meio (somente código + título)
     const box = el("div", { className: "box" });
@@ -2227,6 +2264,5 @@ async function doLogin() {
   enterLookupMode();
   $("#pacCPF").focus();
 }
-
 
 
